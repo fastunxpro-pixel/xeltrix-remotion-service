@@ -1,5 +1,4 @@
-# ── Build stage ───────────────────────────────────────────────────────────────
-FROM node:20-bookworm AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -10,7 +9,7 @@ COPY . .
 RUN npm run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM node:20-bookworm
+FROM node:20-bookworm-slim
 
 # Dépendances système pour Chrome Headless Shell (utilisé par Remotion)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -53,17 +52,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# dist/ — bundle esbuild compilé
-COPY --from=builder /app/dist ./dist
-
-# remotion/ — Root.tsx + VideoComposition.tsx (requis par bundle() au runtime)
-COPY --from=builder /app/remotion ./remotion
-
-# node_modules — requis par @remotion/bundler, @remotion/renderer, @aws-sdk
+# Copier node_modules, dist et fichiers Remotion depuis le build stage
 COPY --from=builder /app/node_modules ./node_modules
-
-# package.json — utile pour Node (type: module, etc.)
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/remotion ./remotion
 COPY --from=builder /app/package.json ./package.json
+
+# Chrome headless shell sera téléchargé au démarrage du serveur (warm-up).
+# Pour le pré-télécharger dans l'image (optionnel) :
+# RUN node -e "const {ensureBrowser}=require('@remotion/renderer');ensureBrowser({chromeMode:'headless-shell'})"
 
 ENV NODE_ENV=production
 ENV PORT=3000
