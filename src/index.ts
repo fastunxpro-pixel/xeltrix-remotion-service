@@ -165,12 +165,11 @@ async function getBundleDir(log: pino.Logger): Promise<string> {
 
   const { bundle } = await import("@remotion/bundler");
 
-  // __dirname injecté par le banner esbuild → pointe vers dist/
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  const entryPoint = path.join(__dirname, "../remotion/Root.tsx");
+  // process.cwd() = /app en Docker, dossier du projet en local
+  // remotion/Root.tsx est copié à la racine dans les deux cas
+  const entryPoint = path.join(process.cwd(), "remotion", "Root.tsx");
 
-  log.info({ entryPoint }, "bundle: cache MISS — start compilation webpack");
+  log.info({ entryPoint, cwd: process.cwd() }, "bundle: cache MISS — start compilation webpack");
   const t = Date.now();
 
   const timeout$ = new Promise<never>((_, reject) =>
