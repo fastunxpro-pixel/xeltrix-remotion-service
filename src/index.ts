@@ -35,8 +35,9 @@ const MAX_WIDTH     = parseInt(process.env.REMOTION_MAX_WIDTH  ?? "720",  10);
 const MAX_HEIGHT    = parseInt(process.env.REMOTION_MAX_HEIGHT ?? "1280", 10);
 const MAX_SCENE_SEC = parseFloat(process.env.REMOTION_MAX_SCENE_SEC ?? "15");
 
-const RENDER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const BUNDLE_TIMEOUT_MS =  2 * 60 * 1000; //  2 minutes
+const RENDER_TIMEOUT_MS      = 10 * 60 * 1000; // 10 minutes
+const BUNDLE_TIMEOUT_MS      =  2 * 60 * 1000; //  2 minutes
+const SKIP_ASSET_VALIDATION  = process.env.SKIP_ASSET_VALIDATION === "true";
 
 // ── Startup check ─────────────────────────────────────────────────────────────
 const REQUIRED: Record<string, string | undefined> = {
@@ -241,44 +242,91 @@ async function warmupRemotion(): Promise<void> {
   log.info({ total_ms: Date.now() - t0 }, "warm-up: terminé");
 }
 
-// ── Validation des médias distants ───────────────────────────────────────────
+// ── validateAssets ────────────────────────────────────────────────────────────
+// - GET Range:bytes=0-1 pour tous les assets (plus fiable que HEAD sur R2/CDN)
+// - Accepte 200 et 206
+// - 3 tentatives, 1s entre chaque, timeout 10s par tentative
+// - Accepte application/octet-stream si l'URL se termine par .mp4
+// - Si SKIP_ASSET_VALIDATION=true → warning seulement, ne bloque pas le rendu
+//
+const ASSET_USER_AGENT = "Xeltrix-Remotion-Render/1.0";
+const ASSET_MAX_RETRIES = 3;
+const ASSET_RETRY_DELAY_MS = 1_000;
+const ASSET_TIMEOUT_MS = 10_000;
+
+async function fetchAssetOnce(url: string): Promise<Response> {
+  return fetch(url, {
+    method: "GET",
+    headers: {
+      Range:        "bytes=0-1",
+      "User-Agent": ASSET_USER_AGENT,
+    },
+    signal: AbortSignal.timeout(ASSET_TIMEOUT_MS),
+  });
+}
+
+async function probeAsset(url: string, log: pino.Logger): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= ASSET_MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetchAssetOnce(url);
+      if (res.status === 200 || res.status === 206) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+      log.warn({ url, status: res.status, attempt }, "asset: statut inattendu — retry");
+    } catch (err: unknown) {
+      lastErr = err;
+      log.warn({ url, err: String(err), attempt }, "asset: fetch échoué — retry");
+    }
+    if (attempt < ASSET_MAX_RETRIES) {
+      await new Promise<void>((r) => setTimeout(r, ASSET_RETRY_DELAY_MS));
+    }
+  }
+  throw new Error(
+    `Render could not fetch media asset from R2 after ${ASSET_MAX_RETRIES} retries. Last error: ${String(lastErr)}`,
+  );
+}
+
+function isContentTypeOk(ct: string, assetType: "image" | "video", url: string): boolean {
+  const lower = ct.toLowerCase();
+  if (assetType === "image") return lower.startsWith("image/");
+  // Vidéo : accepte video/*, application/octet-stream pour les .mp4
+  if (lower.startsWith("video/")) return true;
+  if (lower.startsWith("application/octet-stream") && url.toLowerCase().endsWith(".mp4")) return true;
+  return false;
+}
+
 async function validateAssets(scenes: Scene[], log: pino.Logger): Promise<void> {
+  if (SKIP_ASSET_VALIDATION) {
+    log.warn(
+      { count: scenes.length },
+      "SKIP_ASSET_VALIDATION=true — validation désactivée, Remotion chargera les médias directement",
+    );
+    return;
+  }
+
   log.info({ count: scenes.length }, "validation médias: début");
 
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i]!;
-    if (!scene.asset_url) continue;
-
-    const expected = scene.asset_type === "image" ? "image/" : "video/";
-    let res: Response;
-
-    try {
-      res = await fetch(scene.asset_url, { method: "HEAD", signal: AbortSignal.timeout(15_000) });
-      if (res.status === 405 || res.status === 501) {
-        res = await fetch(scene.asset_url, {
-          method: "GET",
-          headers: { Range: "bytes=0-0" },
-          signal: AbortSignal.timeout(15_000),
-        });
-      }
-    } catch (err: unknown) {
-      throw new Error(
-        `Asset injoignable (scène ${i + 1}/${scenes.length}, ${scene.asset_type}) : ${scene.asset_url} — ${String(err)}`,
-      );
+    if (!scene.asset_url) {
+      log.info({ idx: i + 1 }, "asset: pas d'URL — scène ignorée");
+      continue;
     }
 
-    if (!res.ok && res.status !== 206) {
-      throw new Error(
-        `Asset HTTP ${res.status} (scène ${i + 1}/${scenes.length}) : ${scene.asset_url}`,
-      );
-    }
+    const res = await probeAsset(scene.asset_url, log); // throws après 3 échecs
 
     const ct = res.headers.get("content-type") ?? "";
-    if (!ct.toLowerCase().startsWith(expected)) {
-      log.warn({ url: scene.asset_url, ct, expected }, `asset Content-Type inattendu (scène ${i + 1}) — on continue`);
+    if (!isContentTypeOk(ct, scene.asset_type, scene.asset_url)) {
+      log.warn(
+        { idx: i + 1, url: scene.asset_url, ct, asset_type: scene.asset_type },
+        "asset: Content-Type inattendu — on continue quand même",
+      );
     }
 
-    log.info({ idx: i + 1, type: scene.asset_type, status: res.status }, "asset OK");
+    log.info(
+      { idx: i + 1, type: scene.asset_type, status: res.status, ct },
+      "asset OK",
+    );
   }
 
   log.info("validation médias: terminée");
