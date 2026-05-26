@@ -1,0 +1,32 @@
+{
+  "name": "xeltrix-remotion-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "start": "node ./dist/index.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1053.0",
+    "@remotion/bundler": "^4.0.465",
+    "@remotion/renderer": "^4.0.465",
+    "express": "^5.1.0",
+    "pino": "^9.7.0",
+    "pino-pretty": "^13.0.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "^4.0.465",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.10",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.5",
+    "esbuild": "^0.27.3",
+    "esbuild-plugin-pino": "^2.3.0",
+    "typescript": "^5.8.3"
+  }
+}
